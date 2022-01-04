@@ -6,16 +6,17 @@
 #include <SFEMP3Shield.h>
 #include <IRremote.h>
 // #include "rgb_lcd.h"
-#include <LiquidCrystal_I2C.h>
 
+#include <LiquidCrystal_I2C.h>
+ 
 #define  gsm   Serial2
 
-const char* ver = "MUSICSYSTEM 3.0A";
+const char* ver = "MUSICSYSTEM 3.0 ";
 
 SdFs sd;
 
 LiquidCrystal_I2C lcd(0x27,16,2);
-// rgb_lcd lcd;
+//rgb_lcd lcd;
 
 SFEMP3Shield MP3player;
 bool isMP3, mode, printMode;
@@ -42,6 +43,9 @@ uint8_t ngay_phuc_sinh_check, thang_phuc_sinh_check;
 uint8_t ngay_thang_thien_check, thang_thang_thien_check;
 uint8_t ngay_hien_xuong_check, thang_hien_xuong_check;
 
+unsigned int startIRTime,startBtnTime,holdBtnTime, lastManIndexTime;
+uint8_t keyState, playManIndex;
+
 const uint8_t daysInMonth[13] = {29,31,28,31,30,31,30,31,31,30,31,30,31};
 const char* thu[7] = {"CN","T2","T3","T4","T5","T6","T7"};
 
@@ -61,10 +65,11 @@ void setup() {
   lcd.setCursor(0,0);
 
   //Init Pin Relay
-   pinMode(RELAY,OUTPUT);
-   digitalWrite(RELAY,LOW);
+  pinMode(BUTTON,INPUT_PULLUP);
+  pinMode(RELAY,OUTPUT);
+  digitalWrite(RELAY,LOW);
 
-  // delay(5000);
+  delay(5000);
   //VERSION
   SerialsPrintln(ver, P_SERIAL | P_SERIAL1);
   SerialsPrintln("", P_SERIAL | P_SERIAL1);
@@ -143,7 +148,7 @@ void setup() {
     if(sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0",10,120000,"CIEV:","ERROR")){
         SerialsPrintln("Nhan gio thanh cong\n\nBat dau doc gio tu module sim800.", P_SERIAL | P_SERIAL1);
         lcd.print(".");
-        sendATCommand("AT+CCLK?",3,200,"CCLK:","ERROR");
+        sendATCommand("AT+CCLK?",5,5000,"CCLK:","ERROR");
         timeFromString(gsmBuffer);
         lastReceiveTimeSignal = 1;
         lcd.setCursor(8,1);
@@ -207,25 +212,54 @@ void setup() {
   SerialsPrintln("\nDoi Nhap Lenh: ", P_SERIAL | P_SERIAL1);
   
 }
-uint32_t startIRTime, old;
 
-void checkIR(){
-  
-  
-  if ((millis() - startIRTime) > 20 && IrReceiver.decode()){
-    SerialsPrintln(millis()-startIRTime, P_SERIAL | P_SERIAL1);
-    xulyhongngoai(IrReceiver.decodedIRData.command);
-    SerialsPrintln("IR DECODING...", P_SERIAL | P_SERIAL1);
-    IrReceiver.printIRResultShort(&Serial);
-    SerialsPrintln("", P_SERIAL | P_SERIAL1);
-    // IrReceiver.printIRResultRawFormatted(&Serial, true);
-    IrReceiver.resume();
-    
+void checkButton(){
+  if((unsigned int)(millis() - startBtnTime) > 10){
+    bool button = digitalRead(BUTTON);
+    SerialsPrintln((unsigned int)(millis() - startBtnTime), P_SERIAL | P_SERIAL1);
+    // SerialsPrint("Button: ", P_SERIAL | P_SERIAL1);
+    // SerialsPrintln(button, P_SERIAL | P_SERIAL1);
+    // SerialsPrint("State: ", P_SERIAL | P_SERIAL1);
+    // SerialsPrintln(keyState, P_SERIAL | P_SERIAL1);
+    if(button){
+      if(keyState == HOLD){
+        keyState = RELEASED;
+        if(MP3player.isPlaying()){
+          MP3player.stopTrack();
+          SerialsPrintln("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
+        }
+
+        digitalWrite(RELAY,LOW);
+
+        mode = !mode;
+        playManIndex = 0;
+        lcd.setCursor(0,1);
+        lcd.print(mode?"AUTO   ":"MANUAL0");
+      }else if(keyState == PRESSED){
+        SerialsPrintln("PRESSED", P_SERIAL | P_SERIAL1);
+        keyState = RELEASED;
+        if(!mode){
+          playManIndex = (playManIndex + 1) % 10;
+          lcd.setCursor(6,1);
+          lcd.print(playManIndex);
+          lastManIndexTime = millis();
+        }
+      }else if(keyState == RELEASED) keyState = IDLE;
+    }else{
+      if(keyState == IDLE){
+        keyState = PRESSED;
+        holdBtnTime = millis();
+        lastManIndexTime = millis();
+      }else if((keyState == PRESSED) && ((unsigned int)(millis() - holdBtnTime) > 2500)) keyState = HOLD;
+      SerialsPrintln((millis() - holdBtnTime), P_SERIAL | P_SERIAL1);
+      SerialsPrintln((unsigned int)(millis() - holdBtnTime)>2500, P_SERIAL | P_SERIAL1);
+    }
+    startBtnTime = millis();
   }
-  startIRTime = millis();
 }
 
 void(* resetFunc) (void) = 0;//declare reset function at address 0
+
 //------------------------------------------------------------------------------
 void loop() {
   if(restart){
@@ -234,12 +268,41 @@ void loop() {
     resetFunc();//Call reset
   }
   
-  
-  checkIR();
+  if ((millis() - startIRTime) > 20 && IrReceiver.decode()){
+    SerialsPrintln("IR DECODING...", P_SERIAL | P_SERIAL1);
+    IrReceiver.printIRResultShort(&Serial);
+    SerialsPrintln("", P_SERIAL | P_SERIAL1);
+    xulyhongngoai(IrReceiver.decodedIRData.command);
+    // IrReceiver.printIRResultRawFormatted(&Serial, true);
+    IrReceiver.resume();
+    startIRTime = millis();
+  }
+
+  // checkButton();
+
+  if((unsigned int) (millis() - lastManIndexTime) > 5000){
+    if(!mode && playManIndex){
+      if(MP3player.isPlaying()){
+        MP3player.stopTrack();
+        SerialsPrintln("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
+      }
+
+      digitalWrite(RELAY,HIGH);
+      delay(2000);
+
+      if(MP3player.playTrack(playManIndex))
+        SerialsPrint("Khong co track ", P_SERIAL | P_SERIAL1);
+      else SerialsPrint("Playing track ", P_SERIAL | P_SERIAL1);
+      SerialsPrintln(playManIndex, P_SERIAL | P_SERIAL1);
+
+      playManIndex = 0;
+      lcd.setCursor(0,1);
+      lcd.print("MANUAL0");
+    }
+  }
 
   gsmBuffer = "";
   while(gsm.available()){
-    // checkIR();
     gsmBuffer += gsm.readString();
     SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
     if(gsmBuffer.indexOf("+CMTI: ")>-1){
@@ -285,17 +348,14 @@ void loop() {
       xulylenh(Serial.readString()); 
     } 
     if(Serial1.available()){
-      String bluCmd = Serial1.readString();
       SerialsPrintln("Xu ly lenh tu bluetooth", P_SERIAL | P_SERIAL1);
-      SerialsPrintln((uint8_t)(bluCmd.charAt(0)), P_SERIAL | P_SERIAL1);
-      if(bluCmd.length()>2)xulylenh(bluCmd+"\n"); 
+      xulylenh(Serial1.readString()+"\n"); 
     }  
     SerialsPrintln("\n\nDoi Nhap Lenh Moi: ", P_SERIAL | P_SERIAL1);
   }
 
-  // if(printMode)sendATCommand("AT+CCLK?",3,200,"CCLK:","ERROR");
-  // else  sendATCommandNoPrint("AT+CCLK?",3,200,"CCLK:","ERROR");
-  sendATCommandNoPrint("AT+CCLK?",1,200,"CCLK:","ERROR");
+  if(printMode)sendATCommand("AT+CCLK?",5,5000,"CCLK:","ERROR");
+  else  sendATCommandNoPrint("AT+CCLK?",5,5000,"CCLK:","ERROR");
 
   timeFromString(gsmBuffer);
   lcd.setCursor(8,1);
@@ -319,7 +379,7 @@ void loop() {
         SerialsPrintln("Thiet lap gio GPS...", P_SERIAL | P_SERIAL1);
         if(sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0",10,120000,"CIEV:","ERROR")){
             SerialsPrintln("Nhan gio thanh cong\n\nBat dau doc gio tu module sim800.", P_SERIAL | P_SERIAL1);
-            sendATCommand("AT+CCLK?",3,200,"CCLK:","ERROR");
+            sendATCommand("AT+CCLK?",5,5000,"CCLK:","ERROR");
             timeFromString(gsmBuffer);
             lastReceiveTimeSignal = 3;
         }else SerialsPrintln("Khong the lay gio GPS", P_SERIAL | P_SERIAL1);
@@ -950,7 +1010,7 @@ void xulylenh(String cmd){
         SerialsPrint("Chuyen qua che do ", P_SERIAL | P_SERIAL1 | have_sms);
         SerialsPrintln(mode?"Auto":"Manual", P_SERIAL | P_SERIAL1 | have_sms);
         lcd.setCursor(0,1);
-        lcd.print(mode?"AUTO  ":"MANUAL");
+        lcd.print(mode?"AUTO   ":"MANUAL0");
         break;
       case PLAY:
         if(mode){
@@ -1177,7 +1237,7 @@ void xulyhongngoai(int cmd){
         SerialsPrint("Chuyen qua che do ", P_SERIAL | P_SERIAL1);
         SerialsPrintln(mode?"Auto":"Manual", P_SERIAL | P_SERIAL1);
         lcd.setCursor(0,1);
-        lcd.print(mode?"AUTO  ":"MANUAL");
+        lcd.print(mode?"AUTO   ":"MANUAL0");
         break;
       case 9: case 71: case 70: case 67: case 0: //Stop - EQ - Play/Pause
         if(IrReceiver.decodedIRData.rawDataPtr->rawlen<31) break;
@@ -1211,7 +1271,8 @@ bool gsmReadSerial(uint32_t timeout,const char *accept ,const char* reject ){
   uint64_t timeOld = millis();
 
   while ((millis() < timeOld + timeout) ){
-    // checkIR();
+    // delay(10);
+    checkButton();
     if(gsm.available()){
       gsmBuffer += gsm.readString();
 #if DEBUG
@@ -1316,7 +1377,7 @@ void initSim800(){
       if(sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0",10,120000,"CIEV:","ERROR")){
           SerialsPrintln("Nhan gio thanh cong\n\nBat dau doc gio tu module sim800.", P_SERIAL | P_SERIAL1);
           lcd.print(".");
-          sendATCommand("AT+CCLK?",3,200,"CCLK:","ERROR");
+          sendATCommand("AT+CCLK?",5,5000,"CCLK:","ERROR");
           timeFromString(gsmBuffer);
           lastReceiveTimeSignal = 1;
           lcd.setCursor(8,1);
