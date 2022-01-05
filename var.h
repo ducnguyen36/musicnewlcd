@@ -83,7 +83,7 @@ enum CMDCODE {
 //Cai Dat Chan
 #define IR_RECEIVE_PIN     22   //Chan nhan hong ngoai
 #define RELAY              24   //Chan Relay
-// #define BUTTON              23   //Chan phim
+#define BUTTON              23   //Chan phim
 
 //Trang Thai Phim
 #define IDLE                0

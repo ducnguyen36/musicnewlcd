@@ -61,8 +61,9 @@ void setup() {
   lcd.setCursor(0,0);
 
   //Init Pin Relay
-   pinMode(RELAY,OUTPUT);
-   digitalWrite(RELAY,LOW);
+  pinMode(BUTTON,INPUT_PULLUP);
+  pinMode(RELAY,OUTPUT);
+  digitalWrite(RELAY,LOW);
 
   // delay(5000);
   //VERSION
@@ -207,12 +208,50 @@ void setup() {
   SerialsPrintln("\nDoi Nhap Lenh: ", P_SERIAL | P_SERIAL1);
   
 }
-uint32_t startIRTime, old;
+uint32_t startIRTime, holdBtnTime, lastManIndexTime , old;
+uint8_t playManIndex, keyState;
+
+void checkButton(){
+    bool button = digitalRead(BUTTON);
+
+    if(button){
+      if(keyState == HOLD || keyState == PRESSED){
+        keyState = RELEASED;
+      }else if(keyState == RELEASED) keyState = IDLE;
+    }else{
+      if(keyState == IDLE){
+        keyState = PRESSED;
+        
+        holdBtnTime = millis();
+      }else if(keyState == PRESSED && (millis() - holdBtnTime) > 2000){
+        keyState = HOLD;
+        if(MP3player.isPlaying()){
+          MP3player.stopTrack();
+          SerialsPrintln("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
+          digitalWrite(RELAY,LOW);
+        }
+        
+          mode = !mode;
+          playManIndex = 0;
+          lcd.setCursor(0,1);
+          lcd.print(mode?"AUTO   ":"MANUAL0");
+        
+      }else if(!mode && keyState == HOLD && (millis() - holdBtnTime) > 1000){
+        
+        playManIndex = (playManIndex + 1) % 10;
+        lcd.setCursor(6,1);
+        lcd.print(playManIndex);
+        // lastManIndexTime = millis();
+        
+        holdBtnTime = millis();
+      }
+    }
+}
 
 void checkIR(){
   
   
-  if ((millis() - startIRTime) > 20 && IrReceiver.decode()){
+  if (IrReceiver.decode()){
     SerialsPrintln(millis()-startIRTime, P_SERIAL | P_SERIAL1);
     xulyhongngoai(IrReceiver.decodedIRData.command);
     SerialsPrintln("IR DECODING...", P_SERIAL | P_SERIAL1);
@@ -222,7 +261,6 @@ void checkIR(){
     IrReceiver.resume();
     
   }
-  startIRTime = millis();
 }
 
 void(* resetFunc) (void) = 0;//declare reset function at address 0
@@ -236,6 +274,28 @@ void loop() {
   
   
   checkIR();
+  checkButton();
+
+  if(millis() - holdBtnTime > 10000){
+    if(!mode && playManIndex){
+      if(MP3player.isPlaying()){
+        MP3player.stopTrack();
+        SerialsPrintln("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
+      }
+
+      digitalWrite(RELAY,HIGH);
+      delay(2000);
+
+      if(MP3player.playTrack(playManIndex))
+        SerialsPrint("Khong co track ", P_SERIAL | P_SERIAL1);
+      else SerialsPrint("Playing track ", P_SERIAL | P_SERIAL1);
+      SerialsPrintln(playManIndex, P_SERIAL | P_SERIAL1);
+
+      playManIndex = 0;
+      lcd.setCursor(0,1);
+      lcd.print("MANUAL0");
+    }
+  }
 
   gsmBuffer = "";
   while(gsm.available()){
@@ -950,7 +1010,7 @@ void xulylenh(String cmd){
         SerialsPrint("Chuyen qua che do ", P_SERIAL | P_SERIAL1 | have_sms);
         SerialsPrintln(mode?"Auto":"Manual", P_SERIAL | P_SERIAL1 | have_sms);
         lcd.setCursor(0,1);
-        lcd.print(mode?"AUTO  ":"MANUAL");
+        lcd.print(mode?"AUTO   ":"MANUAL0");
         break;
       case PLAY:
         if(mode){
@@ -1177,7 +1237,7 @@ void xulyhongngoai(int cmd){
         SerialsPrint("Chuyen qua che do ", P_SERIAL | P_SERIAL1);
         SerialsPrintln(mode?"Auto":"Manual", P_SERIAL | P_SERIAL1);
         lcd.setCursor(0,1);
-        lcd.print(mode?"AUTO  ":"MANUAL");
+        lcd.print(mode?"AUTO   ":"MANUAL0");
         break;
       case 9: case 71: case 70: case 67: case 0: //Stop - EQ - Play/Pause
         if(IrReceiver.decodedIRData.rawDataPtr->rawlen<31) break;

@@ -227,9 +227,10 @@ void checkButton(){
         if(MP3player.isPlaying()){
           MP3player.stopTrack();
           SerialsPrintln("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
+          digitalWrite(RELAY,LOW);
         }
 
-        digitalWrite(RELAY,LOW);
+        
 
         mode = !mode;
         playManIndex = 0;
