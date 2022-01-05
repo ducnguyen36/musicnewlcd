@@ -10,7 +10,7 @@
 
 #define  gsm   Serial2
 
-const char* ver = "MUSICSYSTEM 3.0A";
+const char* ver = "MUSICSYSTEM 3.0C";
 
 SdFs sd;
 
@@ -208,10 +208,12 @@ void setup() {
   SerialsPrintln("\nDoi Nhap Lenh: ", P_SERIAL | P_SERIAL1);
   
 }
-uint32_t startIRTime, holdBtnTime, lastManIndexTime , old;
+uint32_t holdBtnTime, lastManIndexTime , startBtnTime;
 uint8_t playManIndex, keyState;
 
 void checkButton(){
+    if(millis() - startBtnTime<20) return;
+    
     bool button = digitalRead(BUTTON);
 
     if(button){
@@ -221,7 +223,12 @@ void checkButton(){
     }else{
       if(keyState == IDLE){
         keyState = PRESSED;
-        
+        if(!mode){
+          playManIndex = (playManIndex + 1) % 10;
+          lcd.setCursor(6,1);
+          lcd.print(playManIndex);
+          lastManIndexTime = millis();
+        }
         holdBtnTime = millis();
       }else if(keyState == PRESSED && (millis() - holdBtnTime) > 2000){
         keyState = HOLD;
@@ -236,31 +243,24 @@ void checkButton(){
           lcd.setCursor(0,1);
           lcd.print(mode?"AUTO   ":"MANUAL0");
         
-      }else if(!mode && keyState == HOLD && (millis() - holdBtnTime) > 1000){
-        
-        playManIndex = (playManIndex + 1) % 10;
-        lcd.setCursor(6,1);
-        lcd.print(playManIndex);
-        // lastManIndexTime = millis();
-        
-        holdBtnTime = millis();
       }
     }
+    startBtnTime = millis();
 }
 
 void checkIR(){
   
   
+  
   if (IrReceiver.decode()){
-    SerialsPrintln(millis()-startIRTime, P_SERIAL | P_SERIAL1);
     xulyhongngoai(IrReceiver.decodedIRData.command);
     SerialsPrintln("IR DECODING...", P_SERIAL | P_SERIAL1);
     IrReceiver.printIRResultShort(&Serial);
     SerialsPrintln("", P_SERIAL | P_SERIAL1);
     // IrReceiver.printIRResultRawFormatted(&Serial, true);
     IrReceiver.resume();
-    
   }
+ 
 }
 
 void(* resetFunc) (void) = 0;//declare reset function at address 0
@@ -296,7 +296,6 @@ void loop() {
       lcd.print("MANUAL0");
     }
   }
-
   gsmBuffer = "";
   while(gsm.available()){
     // checkIR();
@@ -338,7 +337,6 @@ void loop() {
     }
     
   }
-
   if(Serial.available() || Serial1.available()) {
     if(Serial.available()){
       SerialsPrintln("Xu ly lenh tu may tinh", P_SERIAL | P_SERIAL1);
@@ -352,14 +350,15 @@ void loop() {
     }  
     SerialsPrintln("\n\nDoi Nhap Lenh Moi: ", P_SERIAL | P_SERIAL1);
   }
-
-  // if(printMode)sendATCommand("AT+CCLK?",3,200,"CCLK:","ERROR");
-  // else  sendATCommandNoPrint("AT+CCLK?",3,200,"CCLK:","ERROR");
-  sendATCommandNoPrint("AT+CCLK?",1,200,"CCLK:","ERROR");
+  if(printMode)sendATCommand("AT+CCLK?",1,200,"CCLK:","ERROR");
+  else  sendATCommandNoPrint("AT+CCLK?",1,200,"CCLK:","ERROR");
+  // sendATCommandNoPrint("AT+CCLK?",1,200,"CCLK:","ERROR");
 
   timeFromString(gsmBuffer);
+  
   lcd.setCursor(8,1);
   lcd.print(printTime(1,1,21,gio_check,phut_check,giay_check).substring(9));
+  
 
   if(phut_old != phut_check){
     phut_old = phut_check;
@@ -1269,11 +1268,15 @@ void xulyhongngoai(int cmd){
 bool gsmReadSerial(uint32_t timeout,const char *accept ,const char* reject ){
   gsmBuffer = "";
   uint64_t timeOld = millis();
-
+  bool result = 0;
   while ((millis() < timeOld + timeout) ){
-    // checkIR();
+    checkIR();
+    checkButton();
+
     if(gsm.available()){
-      gsmBuffer += gsm.readString();
+      char buff = gsm.read();
+      gsmBuffer += buff;
+      // gsmBuffer += gsm.readString();
 #if DEBUG
     if(printMode){
       SerialsPrint("Chuoi nhan duoc tu sim800: ", P_SERIAL | P_SERIAL1);
@@ -1285,18 +1288,20 @@ bool gsmReadSerial(uint32_t timeout,const char *accept ,const char* reject ){
         SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
         have_sms = 1;
       } 
-      if(gsmBuffer.indexOf(accept)>-1 || gsmBuffer.indexOf(reject)>-1){
+      // if((gsmBuffer.indexOf(accept)>-1 || gsmBuffer.indexOf(reject)>-1)){
+      if((buff == '\n' || buff == '>') && (gsmBuffer.indexOf(accept)>-1 || gsmBuffer.indexOf(reject)>-1)){
 #if DEBUG
         SerialsPrint("chi muc chap nhan: ", P_SERIAL | P_SERIAL1);
         SerialsPrintln(gsmBuffer.indexOf(accept), P_SERIAL | P_SERIAL1);
         SerialsPrint("chi muc tu choi: ", P_SERIAL | P_SERIAL1);
         SerialsPrintln(gsmBuffer.indexOf(reject), P_SERIAL | P_SERIAL1);
 #endif
-        return gsmBuffer.indexOf(accept)>-1;
+        timeout = 1000;
+        result =  gsmBuffer.indexOf(accept)>-1;
       }
     }
   }
-  return 0;
+  return result;
 }
 
 bool sendATCommand(String cmd,uint8_t retry, uint32_t timeout,const char *acc,const char *err){
@@ -1337,6 +1342,7 @@ bool sendATCommand(const char* cmd,uint8_t retry, uint32_t timeout,const char *a
         // gsm.println(cmd);
         res = gsmReadSerial(timeout,acc,err);
     }
+    while(gsm.available()) gsmBuffer += gsm.readString();
     SerialsPrint("Thanh Cong: ", P_SERIAL | P_SERIAL1);
     SerialsPrintln(res?"Co":"Khong", P_SERIAL | P_SERIAL1);
     SerialsPrintln(gsmBuffer, P_SERIAL | P_SERIAL1);
