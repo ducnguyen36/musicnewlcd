@@ -14,7 +14,7 @@
 
 #define  gsm   Serial2
 
-const char* ver = "MUSICSYSTEM 3.0D";
+const char* ver = "MUSICSYSTEM 3.0E";
 
 SdFs sd;
 
