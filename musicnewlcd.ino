@@ -1,21 +1,28 @@
 
-#define DEBUG   0
+#define DEBUG       0
+#define GROOVE_LCD  1
 
 
 #include "var.h"
 #include <SFEMP3Shield.h>
 #include <IRremote.h>
-// #include "rgb_lcd.h"
+#if GROOVE_LCD
+#include "rgb_lcd.h"
+#else
 #include <LiquidCrystal_I2C.h>
+#endif
 
 #define  gsm   Serial2
 
-const char* ver = "MUSICSYSTEM 3.0C";
+const char* ver = "MUSICSYSTEM 3.0D";
 
 SdFs sd;
 
+#if GROOVE_LCD
+rgb_lcd lcd;
+#else
 LiquidCrystal_I2C lcd(0x27,16,2);
-// rgb_lcd lcd;
+#endif
 
 SFEMP3Shield MP3player;
 bool isMP3, mode, printMode;
@@ -54,9 +61,13 @@ void setup() {
   gsm.begin(9600);
 
   //init LCD
+#if GROOVE_LCD
+  lcd.begin(16,2);
+#else
   lcd.init();
   lcd.backlight();
-//  lcd.begin(16,2);
+#endif
+
   lcd.clear();
   lcd.setCursor(0,0);
 
