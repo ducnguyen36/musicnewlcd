@@ -515,8 +515,8 @@ String checkLichNhac(){
                   || thang_check != thang_hien_xuong_check))  break;
             case 'A':
               if(lineBuffer[0]=='A'){
-                if(((lineBuffer[1]-48 || lineBuffer[2]-48) && (ngay_check  != lineBuffer.substring(1,3).toInt()))
-                || ((lineBuffer[4]-48 || lineBuffer[5]-48) && (thang_check != lineBuffer.substring(4,6).toInt()))) break;
+                if(((lineBuffer[1]-48 || lineBuffer[2]-48) && (ngay_am_check  != lineBuffer.substring(1,3).toInt()))
+                || ((lineBuffer[4]-48 || lineBuffer[5]-48) && (thang_am_check != lineBuffer.substring(4,6).toInt()))) break;
               }
               if(lineBuffer[13]=='!'){
                 restart = 1;
