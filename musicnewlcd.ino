@@ -30,6 +30,8 @@ bool sendATCommandNoPrint(String cmd, uint8_t retry, uint32_t timeout,
 bool sendATCommandNoPrint(const char *cmd, uint8_t retry, uint32_t timeout,
                           const char *acc, const char *err);
 bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject);
+void gsmFlush();
+int getSignalQuality();
 bool timeFromString(String dateTime);
 String printTime(uint8_t ngay, uint8_t thang, uint8_t nam, uint8_t gio,
                  uint8_t phut, uint8_t giay);
@@ -441,14 +443,15 @@ void loop() {
   }
   gsmBuffer = "";
   while (gsm.available()) {
-    // checkIR();
-    gsmBuffer += gsm.readString();
-    SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
-    if (gsmBuffer.indexOf("+CMTI: ") > -1) {
-      SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
-      have_sms = 1;
+    char c = gsm.read();
+    gsmBuffer += c;
+    if (c == '\n') {
+      SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
+      if (gsmBuffer.indexOf("+CMTI: ") > -1) {
+        SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
+        have_sms = 1;
+      }
     }
-    SerialsPrint("", P_SERIAL | P_SERIAL1);
   }
 
   if (have_sms) {
@@ -1595,41 +1598,77 @@ void xulyhongngoai(int cmd) {
   digitalWrite(RELAY, musicPlayer.playingMusic);
 }
 
+// Flush any pending data from GSM serial buffer
+void gsmFlush() {
+  while (gsm.available())
+    gsm.read();
+}
+
+// Get signal quality (0-31, 99=unknown). Returns -1 on error.
+int getSignalQuality() {
+  gsmFlush();
+  gsm.println("AT+CSQ");
+  gsmBuffer = "";
+  uint32_t t = millis();
+  while (millis() - t < 2000) {
+    if (gsm.available()) {
+      char c = gsm.read();
+      gsmBuffer += c;
+      if (c == '\n' && gsmBuffer.indexOf("+CSQ:") > -1) {
+        // Format: +CSQ: XX,YY
+        int idx = gsmBuffer.indexOf("+CSQ: ") + 6;
+        int rssi =
+            gsmBuffer.substring(idx, gsmBuffer.indexOf(',', idx)).toInt();
+        return rssi;
+      }
+    }
+  }
+  return -1;
+}
+
 bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject) {
   gsmBuffer = "";
-  uint64_t timeOld = millis();
-  bool result = 0;
-  while ((millis() < timeOld + timeout)) {
+  uint64_t deadline = millis() + timeout;
+  uint64_t charTimeout = millis() + timeout;
+  bool result = false;
+
+  while (millis() < deadline) {
     checkIR();
     checkButton();
 
     if (gsm.available()) {
       char buff = gsm.read();
       gsmBuffer += buff;
-      // gsmBuffer += gsm.readString();
+      charTimeout = millis() + 1000; // 1s gap timeout between chars
+
 #if DEBUG
       if (printMode) {
-        SerialsPrint("Chuoi nhan duoc tu sim800: ", P_SERIAL | P_SERIAL1);
+        SerialsPrint("GSM RX: ", P_SERIAL | P_SERIAL1);
         SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
       }
 #endif
-      timeOld = millis();
+
+      // Check for incoming SMS notification
       if (gsmBuffer.indexOf("+CMTI:") > -1) {
         SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
         have_sms = 1;
       }
-      // if((gsmBuffer.indexOf(accept)>-1 || gsmBuffer.indexOf(reject)>-1)){
-      if ((buff == '\n' || buff == '>') &&
-          (gsmBuffer.indexOf(accept) > -1 || gsmBuffer.indexOf(reject) > -1)) {
+
+      // Only check for accept/reject after a complete line or prompt
+      if (buff == '\n' || buff == '>') {
+        if (gsmBuffer.indexOf(accept) > -1 || gsmBuffer.indexOf(reject) > -1) {
 #if DEBUG
-        SerialsPrint("chi muc chap nhan: ", P_SERIAL | P_SERIAL1);
-        SerialsPrintln(gsmBuffer.indexOf(accept), P_SERIAL | P_SERIAL1);
-        SerialsPrint("chi muc tu choi: ", P_SERIAL | P_SERIAL1);
-        SerialsPrintln(gsmBuffer.indexOf(reject), P_SERIAL | P_SERIAL1);
+          SerialsPrint("chi muc chap nhan: ", P_SERIAL | P_SERIAL1);
+          SerialsPrintln(gsmBuffer.indexOf(accept), P_SERIAL | P_SERIAL1);
+          SerialsPrint("chi muc tu choi: ", P_SERIAL | P_SERIAL1);
+          SerialsPrintln(gsmBuffer.indexOf(reject), P_SERIAL | P_SERIAL1);
 #endif
-        timeout = 1000;
-        result = gsmBuffer.indexOf(accept) > -1;
+          deadline = millis() + 500;
+          result = gsmBuffer.indexOf(accept) > -1;
+        }
       }
+    } else if (result && millis() > charTimeout) {
+      break;
     }
   }
   return result;
@@ -1649,39 +1688,41 @@ bool sendATCommandNoPrint(String cmd, uint8_t retry, uint32_t timeout,
 
 bool sendATCommandNoPrint(const char *cmd, uint8_t retry, uint32_t timeout,
                           const char *acc, const char *err) {
-
+  gsmFlush();
   gsm.println(cmd);
   bool res = gsmReadSerial(timeout, acc, err);
   while (!res && retry && --retry) {
+    delay(200); // Small delay between retries
+    gsmFlush();
     gsm.println(cmd);
     res = gsmReadSerial(timeout, acc, err);
   }
-
   return res;
 }
 
 bool sendATCommand(const char *cmd, uint8_t retry, uint32_t timeout,
                    const char *acc, const char *err) {
-
-  SerialsPrint("Gui lenh AT command: ", P_SERIAL | P_SERIAL1);
+  SerialsPrint("AT>> ", P_SERIAL | P_SERIAL1);
   SerialsPrintln(cmd, P_SERIAL | P_SERIAL1 | P_GSM);
-  // gsm.println(cmd);
+  gsmFlush();
   bool res = gsmReadSerial(timeout, acc, err);
   while (!res && retry && --retry) {
-    SerialsPrint("So luot thu lai con: ", P_SERIAL | P_SERIAL1);
-    SerialsPrintln(retry, P_SERIAL | P_SERIAL1);
-    SerialsPrintln("\nGui lai lenh AT", P_SERIAL | P_SERIAL1);
-    //      if(cmd[3])gsm.println("A/");
+    SerialsPrint("Retry(", P_SERIAL | P_SERIAL1);
+    SerialsPrint(retry, P_SERIAL | P_SERIAL1);
+    SerialsPrintln(")", P_SERIAL | P_SERIAL1);
+    delay(200);
+    gsmFlush();
     SerialsPrintln(cmd, P_SERIAL | P_SERIAL1 | P_GSM);
-    // gsm.println(cmd);
     res = gsmReadSerial(timeout, acc, err);
   }
-  while (gsm.available())
-    gsmBuffer += gsm.readString();
-  SerialsPrint("Thanh Cong: ", P_SERIAL | P_SERIAL1);
-  SerialsPrintln(res ? "Co" : "Khong", P_SERIAL | P_SERIAL1);
+  // Drain any remaining data
+  uint32_t drainEnd = millis() + 200;
+  while (millis() < drainEnd) {
+    if (gsm.available())
+      gsmBuffer += (char)gsm.read();
+  }
+  SerialsPrint(res ? "OK: " : "FAIL: ", P_SERIAL | P_SERIAL1);
   SerialsPrintln(gsmBuffer, P_SERIAL | P_SERIAL1);
-
   return res;
 }
 
@@ -1712,6 +1753,15 @@ void initGsm() {
     // Detect module type
     detectGsmModule();
     lcd.print(gsmModuleType == GSM_A7680 ? "A7680" : "SIM800");
+
+    // Check signal quality
+    int rssi = getSignalQuality();
+    SerialsPrint("Signal (RSSI): ", P_SERIAL | P_SERIAL1);
+    SerialsPrintln(rssi, P_SERIAL | P_SERIAL1);
+    if (rssi > 0 && rssi < 99) {
+      lcd.print(" S");
+      lcd.print(min(rssi / 7, 4)); // Signal bars 0-4
+    }
     if (lastReceiveTimeSignal > 2) {
       lcd.print(".");
       SerialsPrintln("Thiet lap gio GPS...", P_SERIAL | P_SERIAL1);
