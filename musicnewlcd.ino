@@ -211,6 +211,11 @@ void setup() {
   lcd.print(".");
   SerialsPrintln("\nDang khoi dong module MP3....", P_SERIAL | P_SERIAL1);
   if (musicPlayer.begin()) {
+    if (!SD.begin(CARDCS)) {
+      SerialsPrintln("Khoi dong the nhac THAT BAI", P_SERIAL | P_SERIAL1);
+    } else {
+      SerialsPrintln("Khoi dong the nhac THANH CONG", P_SERIAL | P_SERIAL1);
+    }
     musicPlayer.setVolume(currentVolume, currentVolume);
     musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
     SerialsPrintln("Mp3 khoi dong thanh cong.", P_SERIAL | P_SERIAL1);
@@ -261,8 +266,8 @@ void setup() {
     bool timeOk = false;
     if (gsmModuleType == GSM_A7680) {
       sendATCommand("AT+CTZU=1", 3, 2000, "OK", "ERROR");
-      timeOk =
-          sendATCommand("AT+COPS=2;+COPS=0", 10, 120000, "+CTZE:", "ERROR");
+      sendATCommand("AT+COPS=2", 3, 5000, "OK", "ERROR");
+      timeOk = sendATCommand("AT+COPS=0", 10, 120000, "CGEV:", "ERROR");
     } else {
       timeOk = sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0", 10, 120000,
                              "CIEV:", "ERROR");
@@ -541,8 +546,11 @@ void loop() {
         bool timeOk = false;
         if (gsmModuleType == GSM_A7680) {
           sendATCommand("AT+CTZU=1", 3, 2000, "OK", "ERROR");
-          timeOk =
-              sendATCommand("AT+COPS=2;+COPS=0", 10, 120000, "+CTZE:", "ERROR");
+          sendATCommand("AT+COPS=2", 3, 10000, "OK", "ERROR");
+          delay(2000);
+          timeOk = sendATCommand("AT+COPS=0", 3, 60000, "CGEV:", "ERROR");
+          if (timeOk)
+            delay(5000); // Wait for network time URC to arrive
         } else {
           timeOk = sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0", 10, 120000,
                                  "CIEV:", "ERROR");
@@ -561,17 +569,16 @@ void loop() {
         lastReceiveTimeSignal++;
     }
   }
-  if (!musicPlayer.playingMusic) {
-    if (musicPlayer.begin()) {
-      musicPlayer.setVolume(currentVolume, currentVolume);
-      musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
-      if (!isMP3)
-        SerialsPrintln("Mp3 khoi dong thanh cong.", P_SERIAL | P_SERIAL1);
-      isMP3 = 1;
-    } else {
-      if (isMP3)
-        SerialsPrint("MP3/SD Loi", P_SERIAL | P_SERIAL1);
-      isMP3 = 0;
+  if (!isMP3) { // Only periodically try to reinitialize if it failed
+    if (millis() % 5000 <
+        50) { // Throttle retries to ~5 seconds so it doesn't freeze the loop
+      if (musicPlayer.begin()) {
+        SD.begin(CARDCS);
+        musicPlayer.setVolume(currentVolume, currentVolume);
+        musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
+        SerialsPrintln("Mp3 khoi dong lai thanh cong.", P_SERIAL | P_SERIAL1);
+        isMP3 = 1;
+      }
     }
   }
 
@@ -607,8 +614,15 @@ void SerialsPrint(String text, uint8_t output) {
     Serial.print(text);
   if (output & 4)
     Serial1.print(text);
-  if (output & 1)
-    Serial2.print(text);
+  if (output & 1) {
+    // For GSM module: replace \n with \r\n for AT command compatibility
+    if (text.endsWith("\n")) {
+      gsm.print(text.substring(0, text.length() - 1));
+      gsm.print("\r\n");
+    } else {
+      gsm.print(text);
+    }
+  }
 }
 
 void SerialsPrint(const char *text, uint8_t output) {
@@ -690,14 +704,19 @@ String checkLichNhac() {
         }
         if (lineBuffer[13] == '!') {
           restart = 1;
+          file.close();
           return String("X");
         }
-        return lineBuffer[13] - 'X' ? lineBuffer.substring(13) + ".MP3"
-                                    : String("X");
+        String ret = lineBuffer[13] - 'X' ? lineBuffer.substring(13) + ".MP3"
+                                          : String("X");
+
+        file.close();
+        return ret;
       }
     }
   }
 
+  file.close();
   return String("X");
 }
 
@@ -1599,6 +1618,8 @@ bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject) {
   gsmBuffer = "";
   uint64_t timeOld = millis();
   bool result = 0;
+  bool response_found = false;
+
   while ((millis() < timeOld + timeout)) {
     checkIR();
     checkButton();
@@ -1606,20 +1627,22 @@ bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject) {
     if (gsm.available()) {
       char buff = gsm.read();
       gsmBuffer += buff;
-      // gsmBuffer += gsm.readString();
+
 #if DEBUG
       if (printMode) {
         SerialsPrint("Chuoi nhan duoc tu sim800: ", P_SERIAL | P_SERIAL1);
         SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
       }
 #endif
-      timeOld = millis();
+      if (!response_found)
+        timeOld = millis();
+
       if (gsmBuffer.indexOf("+CMTI:") > -1) {
         SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
         have_sms = 1;
       }
-      // if((gsmBuffer.indexOf(accept)>-1 || gsmBuffer.indexOf(reject)>-1)){
-      if ((buff == '\n' || buff == '>') &&
+
+      if (!response_found && (buff == '\n' || buff == '>') &&
           (gsmBuffer.indexOf(accept) > -1 || gsmBuffer.indexOf(reject) > -1)) {
 #if DEBUG
         SerialsPrint("chi muc chap nhan: ", P_SERIAL | P_SERIAL1);
@@ -1627,8 +1650,10 @@ bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject) {
         SerialsPrint("chi muc tu choi: ", P_SERIAL | P_SERIAL1);
         SerialsPrintln(gsmBuffer.indexOf(reject), P_SERIAL | P_SERIAL1);
 #endif
-        timeout = 1000;
+        timeout = 1000; // 1s wait for trailing data
+        timeOld = millis();
         result = gsmBuffer.indexOf(accept) > -1;
+        response_found = true; // Stop checking on future chars
       }
     }
   }
@@ -1686,8 +1711,70 @@ bool sendATCommand(const char *cmd, uint8_t retry, uint32_t timeout,
 }
 
 uint8_t gsmReset() {
-  sendATCommand("AT+CFUN=1,1", 2, 10000, "OK", "ERROR");
-  sendATCommand("AT", 6, 5000, "OK", "ERROR");
+  // Wait for module to boot up
+  delay(3000);
+
+  // Auto-baud detection: try common baud rates
+  const long baudRates[] = {38400, 9600, 115200};
+  const char *baudNames[] = {"38400", "9600", "115200"};
+  bool connected = false;
+
+  for (uint8_t i = 0; i < 3 && !connected; i++) {
+    gsm.end();
+    gsm.begin(baudRates[i]);
+    delay(100);
+    SerialsPrint("Trying baud: ", P_SERIAL | P_SERIAL1);
+    SerialsPrintln(baudRates[i], P_SERIAL | P_SERIAL1);
+
+    // Send AT and read raw response (don't use sendATCommand — baud might be
+    // wrong)
+    for (uint8_t attempt = 0; attempt < 3 && !connected; attempt++) {
+      while (gsm.available())
+        gsm.read(); // flush
+      gsm.println("AT");
+      gsmBuffer = "";
+      uint32_t t = millis();
+      while (millis() - t < 1000) {
+        if (gsm.available())
+          gsmBuffer += (char)gsm.read();
+      }
+      if (gsmBuffer.indexOf("OK") > -1) {
+        connected = true;
+        SerialsPrint("Module found at baud: ", P_SERIAL | P_SERIAL1);
+        SerialsPrintln(baudNames[i], P_SERIAL | P_SERIAL1);
+      }
+    }
+  }
+
+  if (!connected)
+    return CONN_ERROR;
+
+  // Flush leftover data from baud detection and let module settle
+  delay(500);
+  while (gsm.available())
+    gsm.read();
+
+  // Verify communication works with sendATCommand
+  if (!sendATCommand("AT", 3, 2000, "OK", "ERROR"))
+    return CONN_ERROR;
+
+  // Detect module type early so we can use correct reset command
+  detectGsmModule();
+
+  // Module-specific reset
+  if (gsmModuleType == GSM_A7680) {
+    // A7680C: use AT+CRESET or soft reset via CFUN
+    sendATCommand("AT+CFUN=0", 2, 5000, "OK", "ERROR");
+    delay(1000);
+    sendATCommand("AT+CFUN=1", 2, 10000, "OK", "ERROR");
+    sendATCommand("AT", 3, 5000, "OK", "ERROR");
+  } else {
+    // SIM800C: full restart
+    sendATCommand("AT+CFUN=1,1", 2, 10000, "OK", "ERROR");
+    sendATCommand("AT", 6, 5000, "OK", "ERROR");
+  }
+
+  // Check SIM card
   bool res = sendATCommand("AT+CPIN?", 4, 5000, "READY", "ERROR");
   if (gsmBuffer.length()) {
     if (!res && gsmBuffer.indexOf("ERR") > -1) {
@@ -1709,8 +1796,7 @@ void initGsm() {
     SerialsPrint("Loi khoi dong module GSM: ", P_SERIAL | P_SERIAL1);
     SerialsPrintln(erCode, P_SERIAL | P_SERIAL1);
   } else {
-    // Detect module type
-    detectGsmModule();
+    // Module already detected in gsmReset
     lcd.print(gsmModuleType == GSM_A7680 ? "A7680" : "SIM800");
     if (lastReceiveTimeSignal > 2) {
       lcd.print(".");
@@ -1718,8 +1804,11 @@ void initGsm() {
       bool timeOk = false;
       if (gsmModuleType == GSM_A7680) {
         sendATCommand("AT+CTZU=1", 3, 2000, "OK", "ERROR");
-        timeOk =
-            sendATCommand("AT+COPS=2;+COPS=0", 10, 120000, "+CTZE:", "ERROR");
+        sendATCommand("AT+COPS=2", 3, 10000, "OK", "ERROR");
+        delay(2000);
+        timeOk = sendATCommand("AT+COPS=0", 3, 60000, "CGEV:", "ERROR");
+        if (timeOk)
+          delay(5000); // Wait for network time URC to arrive
       } else {
         timeOk = sendATCommand("AT+CLTS=1;+COPS=2;+COPS=0", 10, 120000,
                                "CIEV:", "ERROR");
