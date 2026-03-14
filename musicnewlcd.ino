@@ -32,6 +32,10 @@ bool sendATCommandNoPrint(const char *cmd, uint8_t retry, uint32_t timeout,
 bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject);
 void gsmFlush();
 int getSignalQuality();
+bool streamReadLine(String &line, uint32_t timeout);
+bool handleURC(const String &line);
+int waitResponse(uint32_t timeout, const char *accept, const char *reject);
+void sendAT(const char *cmd);
 bool timeFromString(String dateTime);
 String printTime(uint8_t ngay, uint8_t thang, uint8_t nam, uint8_t gio,
                  uint8_t phut, uint8_t giay);
@@ -1597,6 +1601,9 @@ void xulyhongngoai(int cmd) {
   }
   digitalWrite(RELAY, musicPlayer.playingMusic);
 }
+// ============================================================================
+// GSM Communication Layer (inspired by TinyGSM)
+// ============================================================================
 
 // Flush any pending data from GSM serial buffer
 void gsmFlush() {
@@ -1604,126 +1611,154 @@ void gsmFlush() {
     gsm.read();
 }
 
-// Get signal quality (0-31, 99=unknown). Returns -1 on error.
-int getSignalQuality() {
-  gsmFlush();
-  gsm.println("AT+CSQ");
-  gsmBuffer = "";
-  uint32_t t = millis();
-  while (millis() - t < 2000) {
+// Read one line from GSM serial (up to '\n' or timeout)
+// Returns true if a line was read, false on timeout
+bool streamReadLine(String &line, uint32_t timeout) {
+  line = "";
+  uint32_t startMs = millis();
+  while (millis() - startMs < timeout) {
     if (gsm.available()) {
       char c = gsm.read();
-      gsmBuffer += c;
-      if (c == '\n' && gsmBuffer.indexOf("+CSQ:") > -1) {
-        // Format: +CSQ: XX,YY
-        int idx = gsmBuffer.indexOf("+CSQ: ") + 6;
-        int rssi =
-            gsmBuffer.substring(idx, gsmBuffer.indexOf(',', idx)).toInt();
-        return rssi;
-      }
+      line += c;
+      if (c == '\n')
+        return true;
+      if (c == '>')
+        return true; // SMS prompt
     }
+    // Yield to IR and button handlers during long waits
+    checkIR();
+    checkButton();
+  }
+  return line.length() > 0; // Return partial line if any
+}
+
+// Handle Unsolicited Result Codes (URCs)
+// Returns true if the line was a URC and was handled
+bool handleURC(const String &line) {
+  if (line.indexOf("+CMTI:") > -1) {
+    SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
+    have_sms = 1;
+    return true;
+  }
+  if (line.indexOf("+CIEV:") > -1 || line.indexOf("+CTZE:") > -1 ||
+      line.indexOf("+CTZEU:") > -1) {
+    // Time zone / network event — store for later processing
+    gsmBuffer += line;
+    return true;
+  }
+  if (line.indexOf("RING") > -1 || line.indexOf("NO CARRIER") > -1) {
+    return true; // Ignore call events
+  }
+  return false;
+}
+
+// Wait for response from GSM module (TinyGSM-style)
+// Returns: 1 = accept match, 2 = reject match, 0 = timeout
+// Full response is stored in gsmBuffer
+int waitResponse(uint32_t timeout, const char *accept, const char *reject) {
+  gsmBuffer = "";
+  String line;
+  uint32_t startMs = millis();
+
+  while (millis() - startMs < timeout) {
+    if (!streamReadLine(line, timeout - (millis() - startMs))) {
+      break; // Timeout with no data
+    }
+
+    // Skip empty lines and echo
+    line.trim();
+    if (line.length() == 0)
+      continue;
+
+#if DEBUG
+    if (printMode) {
+      SerialsPrint("<< ", P_SERIAL | P_SERIAL1);
+      SerialsPrintln(line, P_SERIAL | P_SERIAL1);
+    }
+#endif
+
+    // Check if it's a URC (unsolicited result code)
+    if (handleURC(line))
+      continue;
+
+    // Accumulate into response buffer
+    gsmBuffer += line + "\n";
+
+    // Check for expected responses
+    if (gsmBuffer.indexOf(accept) > -1) {
+      // Drain any trailing data (e.g. extra OK after data)
+      delay(50);
+      while (gsm.available())
+        gsmBuffer += (char)gsm.read();
+      return 1; // Accept
+    }
+    if (gsmBuffer.indexOf(reject) > -1) {
+      return 2; // Reject/Error
+    }
+  }
+  return 0; // Timeout
+}
+
+// Send AT command to GSM module (just writes, no wait)
+void sendAT(const char *cmd) {
+  gsmFlush();
+  gsm.println(cmd);
+}
+
+// Get signal quality (0-31, 99=unknown). Returns -1 on error.
+int getSignalQuality() {
+  sendAT("AT+CSQ");
+  if (waitResponse(2000, "+CSQ:", "ERROR") == 1) {
+    int idx = gsmBuffer.indexOf("+CSQ: ") + 6;
+    return gsmBuffer.substring(idx, gsmBuffer.indexOf(',', idx)).toInt();
   }
   return -1;
 }
 
-bool gsmReadSerial(uint32_t timeout, const char *accept, const char *reject) {
-  gsmBuffer = "";
-  uint64_t deadline = millis() + timeout;
-  uint64_t charTimeout = millis() + timeout;
-  bool result = false;
-
-  while (millis() < deadline) {
-    checkIR();
-    checkButton();
-
-    if (gsm.available()) {
-      char buff = gsm.read();
-      gsmBuffer += buff;
-      charTimeout = millis() + 1000; // 1s gap timeout between chars
-
-#if DEBUG
-      if (printMode) {
-        SerialsPrint("GSM RX: ", P_SERIAL | P_SERIAL1);
-        SerialsPrint(gsmBuffer, P_SERIAL | P_SERIAL1);
-      }
-#endif
-
-      // Check for incoming SMS notification
-      if (gsmBuffer.indexOf("+CMTI:") > -1) {
-        SerialsPrintln("Nhan duoc tin nhan moi", P_SERIAL | P_SERIAL1);
-        have_sms = 1;
-      }
-
-      // Only check for accept/reject after a complete line or prompt
-      if (buff == '\n' || buff == '>') {
-        if (gsmBuffer.indexOf(accept) > -1 || gsmBuffer.indexOf(reject) > -1) {
-#if DEBUG
-          SerialsPrint("chi muc chap nhan: ", P_SERIAL | P_SERIAL1);
-          SerialsPrintln(gsmBuffer.indexOf(accept), P_SERIAL | P_SERIAL1);
-          SerialsPrint("chi muc tu choi: ", P_SERIAL | P_SERIAL1);
-          SerialsPrintln(gsmBuffer.indexOf(reject), P_SERIAL | P_SERIAL1);
-#endif
-          deadline = millis() + 500;
-          result = gsmBuffer.indexOf(accept) > -1;
-        }
-      }
-    } else if (result && millis() > charTimeout) {
-      break;
-    }
-  }
-  return result;
-}
-
-bool sendATCommand(String cmd, uint8_t retry, uint32_t timeout, const char *acc,
-                   const char *err) {
-
-  return sendATCommand(cmd.c_str(), retry, timeout, acc, err);
-}
-
-bool sendATCommandNoPrint(String cmd, uint8_t retry, uint32_t timeout,
-                          const char *acc, const char *err) {
-
-  return sendATCommandNoPrint(cmd.c_str(), retry, timeout, acc, err);
-}
-
-bool sendATCommandNoPrint(const char *cmd, uint8_t retry, uint32_t timeout,
-                          const char *acc, const char *err) {
-  gsmFlush();
-  gsm.println(cmd);
-  bool res = gsmReadSerial(timeout, acc, err);
-  while (!res && retry && --retry) {
-    delay(200); // Small delay between retries
-    gsmFlush();
-    gsm.println(cmd);
-    res = gsmReadSerial(timeout, acc, err);
-  }
-  return res;
-}
+// ---- Backward-compatible wrappers ----
 
 bool sendATCommand(const char *cmd, uint8_t retry, uint32_t timeout,
                    const char *acc, const char *err) {
   SerialsPrint("AT>> ", P_SERIAL | P_SERIAL1);
-  SerialsPrintln(cmd, P_SERIAL | P_SERIAL1 | P_GSM);
-  gsmFlush();
-  bool res = gsmReadSerial(timeout, acc, err);
-  while (!res && retry && --retry) {
+  SerialsPrintln(cmd, P_SERIAL | P_SERIAL1);
+
+  sendAT(cmd);
+  int res = waitResponse(timeout, acc, err);
+
+  while (res != 1 && retry && --retry) {
     SerialsPrint("Retry(", P_SERIAL | P_SERIAL1);
     SerialsPrint(retry, P_SERIAL | P_SERIAL1);
     SerialsPrintln(")", P_SERIAL | P_SERIAL1);
     delay(200);
-    gsmFlush();
-    SerialsPrintln(cmd, P_SERIAL | P_SERIAL1 | P_GSM);
-    res = gsmReadSerial(timeout, acc, err);
+    sendAT(cmd);
+    res = waitResponse(timeout, acc, err);
   }
-  // Drain any remaining data
-  uint32_t drainEnd = millis() + 200;
-  while (millis() < drainEnd) {
-    if (gsm.available())
-      gsmBuffer += (char)gsm.read();
-  }
-  SerialsPrint(res ? "OK: " : "FAIL: ", P_SERIAL | P_SERIAL1);
+
+  SerialsPrint(res == 1 ? "OK: " : "FAIL: ", P_SERIAL | P_SERIAL1);
   SerialsPrintln(gsmBuffer, P_SERIAL | P_SERIAL1);
-  return res;
+  return res == 1;
+}
+
+bool sendATCommand(String cmd, uint8_t retry, uint32_t timeout, const char *acc,
+                   const char *err) {
+  return sendATCommand(cmd.c_str(), retry, timeout, acc, err);
+}
+
+bool sendATCommandNoPrint(const char *cmd, uint8_t retry, uint32_t timeout,
+                          const char *acc, const char *err) {
+  sendAT(cmd);
+  int res = waitResponse(timeout, acc, err);
+  while (res != 1 && retry && --retry) {
+    delay(200);
+    sendAT(cmd);
+    res = waitResponse(timeout, acc, err);
+  }
+  return res == 1;
+}
+
+bool sendATCommandNoPrint(String cmd, uint8_t retry, uint32_t timeout,
+                          const char *acc, const char *err) {
+  return sendATCommandNoPrint(cmd.c_str(), retry, timeout, acc, err);
 }
 
 uint8_t gsmReset() {
