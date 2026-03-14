@@ -4,6 +4,11 @@
 
 #include "var.h"
 #include <Adafruit_VS1053.h>
+#define RAW_BUFFER_LENGTH                                                      \
+  100 // Default is 750 on Mega! Saves ~650 bytes RAM. 100 supports NEC/Sony/RC5
+      // up to 48 bits.
+#define EXCLUDE_EXOTIC_PROTOCOLS // Save ~500 bytes flash + some RAM
+#define NO_LED_FEEDBACK_CODE     // Save ~100 bytes flash
 #include <IRremote.h>
 #include <SD.h>
 #include <SPI.h>
@@ -90,7 +95,10 @@ bool isFnMusic(const char *filename) {
 bool playTrackByNumber(uint8_t num) {
   char trackName[16];
   sprintf(trackName, "/track%03d.mp3", num);
-  return musicPlayer.startPlayingFile(trackName);
+  IrReceiver.stop(); // Pause IR timer to protect SD card SPI
+  bool ok = musicPlayer.startPlayingFile(trackName);
+  IrReceiver.start(); // Resume IR timer
+  return ok;
 }
 
 // Helper: play MP3 by filename
@@ -98,7 +106,10 @@ bool playMP3File(String filename) {
   filename.trim();
   if (filename[0] != '/')
     filename = "/" + filename;
-  return musicPlayer.startPlayingFile(filename.c_str());
+  IrReceiver.stop(); // Pause IR timer to protect SD card SPI
+  bool ok = musicPlayer.startPlayingFile(filename.c_str());
+  IrReceiver.start(); // Resume IR timer
+  return ok;
 }
 
 // SD rename helper (SD library may not have rename)
@@ -219,6 +230,7 @@ void setup() {
     musicPlayer.setVolume(currentVolume, currentVolume);
     musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
     SerialsPrintln("Mp3 khoi dong thanh cong.", P_SERIAL | P_SERIAL1);
+
     isMP3 = 1;
   } else {
     SerialsPrint("MP3/SD Loi", P_SERIAL | P_SERIAL1);
