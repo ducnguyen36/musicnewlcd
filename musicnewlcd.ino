@@ -44,6 +44,7 @@ void detectGsmModule();
 void xulylenh(String cmd);
 void xulyhongngoai(int cmd);
 String checkLichNhac();
+void sendBufferedSMS(String phone);
 void ngayPhucSinh(uint8_t nam);
 void ngayAmLich(uint8_t ngay, uint8_t thang, uint8_t nam);
 void weekday(uint8_t ngay, uint8_t thang, uint8_t nam);
@@ -133,6 +134,10 @@ bool sdRename(const char *oldName, const char *newName) {
 
 String gsmBuffer;
 bool have_sms, master, restart;
+
+// SMS buffering: accumulate text then send in 160-char parts
+String smsBuffer;
+bool smsBuffering = false;
 
 // Detect which GSM module is connected (SIM800C or A7680C)
 void detectGsmModule() {
@@ -627,14 +632,82 @@ void SerialsPrint(String text, uint8_t output) {
   if (output & 4)
     Serial1.print(text);
   if (output & 1) {
-    // For GSM module: replace \n with \r\n for AT command compatibility
-    if (text.endsWith("\n")) {
-      gsm.print(text.substring(0, text.length() - 1));
-      gsm.print("\r\n");
+    if (smsBuffering) {
+      // Buffer GSM output for multi-part SMS sending
+      smsBuffer += text;
     } else {
-      gsm.print(text);
+      // For GSM module: replace \n with \r\n for AT command compatibility
+      if (text.endsWith("\n")) {
+        gsm.print(text.substring(0, text.length() - 1));
+        gsm.print("\r\n");
+      } else {
+        gsm.print(text);
+      }
     }
   }
+}
+
+// Send buffered SMS content split into parts that fit SMS limit
+// Each \n in buffer becomes \r\n (2 bytes) on wire, so we must count actual size
+#define SMS_MAX_SIZE 150  // Safe limit (160 minus overhead margin)
+
+void sendBufferedSMS(String phone) {
+  if (smsBuffer.length() == 0) return;
+  
+  int totalLen = smsBuffer.length();
+  int partStart = 0;
+  
+  while (partStart < totalLen) {
+    // Calculate how many buffer chars fit in SMS_MAX_SIZE actual bytes
+    int smsSize = 0;
+    int partEnd = partStart;
+    int lastNewline = -1;
+    
+    while (partEnd < totalLen && smsSize < SMS_MAX_SIZE) {
+      if (smsBuffer[partEnd] == '\n') {
+        smsSize += 2;  // \n becomes \r\n on wire
+        lastNewline = partEnd;
+      } else if (smsBuffer[partEnd] != '\r') {
+        smsSize++;
+      }
+      if (smsSize <= SMS_MAX_SIZE)
+        partEnd++;
+    }
+    
+    // If we stopped mid-text and there's a newline, break there for cleaner SMS
+    if (partEnd < totalLen && lastNewline > partStart) {
+      partEnd = lastNewline + 1;
+    }
+    
+    // Fallback: if no progress, force advance by 1 char
+    if (partEnd == partStart) partEnd++;
+    
+    String part = smsBuffer.substring(partStart, partEnd);
+    part.trim();
+    
+    if (part.length() > 0) {
+      if (sendATCommand("AT+CMGS=\"+84" + phone + "\"", 5, 60000, ">", "ERROR")) {
+        // Send the part content directly to GSM
+        for (unsigned int i = 0; i < part.length(); i++) {
+          if (part[i] == '\n') {
+            gsm.print("\r\n");
+          } else {
+            gsm.print(part[i]);
+          }
+        }
+        sendATCommand("\032", 1, 30000, "OK", "ERROR");
+        // Wait for network to process before sending next part
+        delay(3000);
+      } else {
+        SerialsPrintln("Loi gui SMS phan tiep theo", P_SERIAL | P_SERIAL1);
+        break;
+      }
+    }
+    
+    partStart = partEnd;
+  }
+  
+  smsBuffer = "";
 }
 
 void SerialsPrint(const char *text, uint8_t output) {
@@ -1008,47 +1081,6 @@ void xulylenh(String cmd) {
     cmd = cmd.substring(4);
     cmd.trim();
     gsm.println(cmd);
-    // return;
-    // String date = cmd.substring(4);
-    // ngay_check  = cmd.substring(4,6).toInt();
-    // thang_check = cmd.substring(6,8).toInt();
-    // nam_check   = cmd.substring(8,10).toInt();
-    // gio_check   = cmd.substring(10,12).toInt();
-    // phut_check  = cmd.substring(12,14).toInt();
-
-    // weekday(ngay_check,thang_check,nam_check);
-    // SerialsPrint(tuan_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrint(", ", P_SERIAL | P_SERIAL1);
-    // SerialsPrint(ngay_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrint("/", P_SERIAL | P_SERIAL1);
-    // SerialsPrint(thang_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrint("/", P_SERIAL | P_SERIAL1);
-    // SerialsPrint(nam_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrint(", ", P_SERIAL | P_SERIAL1);
-    // SerialsPrint(gio_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrint(":", P_SERIAL | P_SERIAL1);
-    // SerialsPrintln(phut_check, P_SERIAL | P_SERIAL1);
-
-    // if(nam==21 || nam == 22){
-    //   ngayAmLich(ngay,thang,nam);
-    // }
-    // SerialsPrint("Kiem tra lich nhac: ", P_SERIAL | P_SERIAL1);
-    // cmd = checkLichNhac();
-    // SerialsPrintln(cmd, P_SERIAL | P_SERIAL1);
-
-    // if(cmd.indexOf(".MP3")>-1){
-    //   if(musicPlayer.playingMusic){
-    //     musicPlayer.stopPlaying();
-    //     SerialsPrint("Dung bai hat dang chay", P_SERIAL | P_SERIAL1);
-    //   }
-    //   if(MP3player.playMP3(cmd)) erCode = PLAY_ERROR;
-    //   if(!erCode){
-    //     SerialsPrint("Playing...", P_SERIAL | P_SERIAL1);
-    //     SerialsPrintln(cmd, P_SERIAL | P_SERIAL1);
-    //   }
-    // }else if(cmd.indexOf("ER")>-1) erCode = LICH_ERROR;
-    // else if(cmd.indexOf("X")>-1)SerialsPrintln("Khong Co Lich Phat Nhac",
-    // P_SERIAL | P_SERIAL1);
   }
 #endif
   String cusd;
@@ -1062,19 +1094,14 @@ void xulylenh(String cmd) {
   }
 
   if (have_sms && !master) {
-    have_sms = sendATCommand("AT+CMGS=\"+84" + phone_master + "\"", 5, 60000,
-                             ">", "ERROR");
+    smsBuffer = "";
+    smsBuffering = true;
     SerialsPrint("CUSD: ", P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln(cusd, P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln("Phone phu gui lenh: ", P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln(cmd, P_SERIAL | P_SERIAL1 | have_sms);
-    if (have_sms)
-      sendATCommand("\032", 1, 30000, "OK", "ERROR");
-    // if(have_sms)gsm.print("\0032");
-    else {
-      SerialsPrintln("Loi khong goi duoc tin nhan chinh", P_SERIAL | P_SERIAL1);
-      erCode = SMS_ERROR;
-    }
+    smsBuffering = false;
+    sendBufferedSMS(phone_master);
   }
 
   if (cmd.indexOf("READ") > -1 || cmd.indexOf("DOC") > -1)
@@ -1137,9 +1164,9 @@ void xulylenh(String cmd) {
     erCode = isMP3 ? PLAYING_ERROR : MP3_ERROR;
   }
   if (have_sms && cmdCode != TK) {
-    have_sms = sendATCommand("AT+CMGS=\"+84" +
-                                 (master ? phone_master : phone_second) + "\"",
-                             5, 60000, ">", "ERROR");
+    // Start buffering SMS content instead of opening SMS session directly
+    smsBuffer = "";
+    smsBuffering = true;
     SerialsPrint("CUSD: ", P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln(cusd, P_SERIAL | P_SERIAL1 | have_sms);
   }
@@ -1367,7 +1394,22 @@ void xulylenh(String cmd) {
   case SONG:
     music_ls(&Serial);
     music_ls(&Serial1);
-    music_ls(&gsm);
+    if (have_sms && smsBuffering) {
+      // Buffer song list for multi-part SMS instead of writing directly
+      File songRoot = SD.open("/");
+      if (songRoot) {
+        File songEntry;
+        while ((songEntry = songRoot.openNextFile())) {
+          if (!songEntry.isDirectory() && isFnMusic(songEntry.name())) {
+            SerialsPrintln(songEntry.name(), have_sms);
+          }
+          songEntry.close();
+        }
+        songRoot.close();
+      }
+    } else {
+      music_ls(&gsm);
+    }
     SerialsPrintln("\nDone", P_SERIAL | P_SERIAL1 | have_sms);
     break;
   case STC:
@@ -1381,10 +1423,10 @@ void xulylenh(String cmd) {
     sendATCommand("AT+CUSD=1,\"*101#\",", 5, 5000, "CUSD:", "ERROR");
     gsmBuffer = gsmBuffer.substring(gsmBuffer.indexOf(", \"") + 3,
                                     gsmBuffer.lastIndexOf("\","));
-    if (have_sms)
-      have_sms = sendATCommand(
-          "AT+CMGS=\"+84" + (master ? phone_master : phone_second) + "\"", 5,
-          60000, ">", "ERROR");
+    if (have_sms) {
+      smsBuffer = "";
+      smsBuffering = true;
+    }
     SerialsPrintln("Chuoi CUSD:", P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln(gsmBuffer, P_SERIAL | P_SERIAL1 | have_sms);
     break;
@@ -1424,17 +1466,20 @@ void xulylenh(String cmd) {
                    P_SERIAL | P_SERIAL1 | have_sms);
 
     SerialsPrintln("", P_SERIAL | P_SERIAL1);
-    if (have_sms)
-      sendATCommand("\032", 1, 30000, "OK", "ERROR");
-    // if(have_sms) gsm.print("\0032");
+    if (have_sms) {
+      smsBuffering = false;
+      sendBufferedSMS(master ? phone_master : phone_second);
+    }
     if (cusd.length() == 9) {
       SerialsPrintln("Nhan tin thong bao dien thoai phu.",
                      P_SERIAL | P_SERIAL1);
-      have_sms = sendATCommand("AT+CMGS=\"+84" + phone_second + "\"", 5, 60000,
-                               ">", "ERROR");
-      if (have_sms)
+      if (sendATCommand("AT+CMGS=\"+84" + phone_second + "\"", 5, 60000,
+                               ">", "ERROR")) {
         gsm.print("Dien thoai cua ban vua duoc dat lam dien thoai phu.");
+        sendATCommand("\032", 1, 30000, "OK", "ERROR");
+      }
     }
+    have_sms = 0; // Already sent via sendBufferedSMS above, prevent double send
 
     break;
   case PRINT:
@@ -1507,9 +1552,10 @@ void xulylenh(String cmd) {
                  P_SERIAL | P_SERIAL1 | have_sms);
     SerialsPrintln(erCode, P_SERIAL | P_SERIAL1 | have_sms);
   }
-  if (have_sms)
-    sendATCommand("\032", 1, 30000, "OK", "ERROR");
-  // if(have_sms) gsm.print("\0032");
+  if (have_sms) {
+    smsBuffering = false;
+    sendBufferedSMS(master ? phone_master : phone_second);
+  }
   have_sms = 0;
 }
 
