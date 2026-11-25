@@ -542,6 +542,8 @@ void loop() {
     SerialsPrint("so phut tinh tu lan cuoi nhan tin hieu GIO: ",
                  P_SERIAL | P_SERIAL1);
     SerialsPrintln(lastReceiveTimeSignal, P_SERIAL | P_SERIAL1);
+    SerialsPrint("gsmBuffer: ", P_SERIAL | P_SERIAL1);
+    SerialsPrintln(gsmBuffer, P_SERIAL | P_SERIAL1);
     if (!printMode)
       SerialsPrintln(printTime(ngay_check, thang_check, nam_check, gio_check,
                                phut_check, giay_check),
@@ -584,6 +586,9 @@ void loop() {
 
       } else
         lastReceiveTimeSignal++;
+    }
+    if(lastReceiveTimeSignal < 8){
+      xulylenh(gsmBuffer);
     }
   }
   if (!isMP3) { // Only periodically try to reinitialize if it failed
@@ -741,12 +746,13 @@ String checkLichNhac() {
     lineBuffer.trim();
     lineBuffer.toUpperCase();
 
-    // SerialsPrintln(lineBuffer, P_SERIAL | P_SERIAL1);
-    // SerialsPrintln(gio_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrintln(phut_check, P_SERIAL | P_SERIAL1);
-    // SerialsPrintln(gio_check  == lineBuffer.substring( 7, 9).toInt(),
-    // P_SERIAL | P_SERIAL1); SerialsPrintln(phut_check ==
-    // lineBuffer.substring(10,12).toInt(), P_SERIAL | P_SERIAL1);
+    SerialsPrintln(lineBuffer, P_SERIAL | P_SERIAL1);
+    SerialsPrintln(gio_check, P_SERIAL | P_SERIAL1);
+    SerialsPrintln(phut_check, P_SERIAL | P_SERIAL1);
+    SerialsPrintln(lineBuffer.substring( 7, 9).toInt(), P_SERIAL | P_SERIAL1);
+    SerialsPrintln(lineBuffer.substring(10,12).toInt(), P_SERIAL | P_SERIAL1);
+    SerialsPrintln(gio_check  == lineBuffer.substring( 7, 9).toInt(), P_SERIAL | P_SERIAL1);
+    SerialsPrintln(phut_check == lineBuffer.substring(10,12).toInt(), P_SERIAL | P_SERIAL1);
 
     if (lineBuffer.length() > 13 &&
         (lineBuffer[0] == 'T' || lineBuffer[0] == 'D' || lineBuffer[0] == 'C' ||
@@ -754,7 +760,7 @@ String checkLichNhac() {
         gio_check == lineBuffer.substring(7, 9).toInt() &&
         phut_check == lineBuffer.substring(10, 12).toInt()) {
 
-      // SerialsPrintln(String(lineBuffer[0]), P_SERIAL | P_SERIAL1);
+      SerialsPrintln(String(lineBuffer[0]), P_SERIAL | P_SERIAL1);
       switch (lineBuffer[0]) {
       case 'D':
         if ((lineBuffer[1] - 48 || lineBuffer[2] - 48) &&
